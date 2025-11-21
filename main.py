@@ -1,13 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import joblib
 import os
-from sklearn.preprocessing import StandardScaler
-from sklearn.naive_bayes import GaussianNB
-from sklearn.svm import LinearSVC
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import VotingClassifier
-from sklearn.model_selection import train_test_split
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
@@ -16,72 +11,62 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- 2. Load Model & Tools (Otomatis Train dari CSV) ---
+# --- 2. Fungsi Load Model (Membaca file .pkl) ---
 @st.cache_resource
 def load_model_objects():
-    csv_file = 'WA_Fn-UseC_-Telco-Customer-Churn.csv'
+    # Daftar file yang wajib ada
+    required_files = [
+        "model_churn_ensemble.pkl",
+        "model_churn_nb.pkl",
+        "model_churn_svm.pkl",
+        "scaler_churn.pkl",
+        "feature_names.pkl"
+    ]
     
-    if not os.path.exists(csv_file):
+    # Cek keberadaan file
+    missing_files = [f for f in required_files if not os.path.exists(f)]
+    
+    if missing_files:
+        st.error(f"⚠ File model berikut hilang: {', '.join(missing_files)}")
+        st.info("Pastikan Anda meng-upload semua file .pkl dari Google Colab ke folder GitHub yang sama dengan main.py")
         return None, None, None, None, None
 
     try:
-        # Load & Cleaning
-        df = pd.read_csv(csv_file)
-        if 'customerID' in df.columns:
-            df = df.drop('customerID', axis=1)
+        # Load file menggunakan joblib
+        model_ensemble = joblib.load("model_churn_ensemble.pkl")
+        model_nb = joblib.load("model_churn_nb.pkl")
+        model_svm = joblib.load("model_churn_svm.pkl")
+        scaler = joblib.load("scaler_churn.pkl")
+        feature_names = joblib.load("feature_names.pkl")
         
-        df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce').fillna(0)
-        if 'Churn' in df.columns:
-            df['Churn'] = df['Churn'].map({'Yes': 1, 'No': 0})
-        
-        # Preprocessing
-        df_encoded = pd.get_dummies(df, drop_first=True)
-        feature_names = df_encoded.drop('Churn', axis=1).columns.tolist()
-        
-        # Split & Scale
-        X = df_encoded.drop('Churn', axis=1)
-        y = df_encoded['Churn']
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        
-        # Modeling
-        # 1. Naive Bayes (Pengganti BernoulliNB di teks)
-        model_nb = GaussianNB()
-        model_nb.fit(X_train_scaled, y_train)
-        
-        # 2. SVM
-        svm_base = LinearSVC(dual=False, random_state=42)
-        model_svm = CalibratedClassifierCV(svm_base)
-        model_svm.fit(X_train_scaled, y_train)
-        
-        # 3. Ensemble
-        model_ensemble = VotingClassifier(estimators=[('nb', model_nb), ('svm', model_svm)], voting='soft')
-        model_ensemble.fit(X_train_scaled, y_train)
-        
-        # Return semua object
-        return model_nb, model_svm, model_ensemble, scaler, feature_names
+        return model_ensemble, model_nb, model_svm, scaler, feature_names
         
     except Exception as e:
-        st.error(f"Error Training: {e}")
+        st.error(f"Gagal membaca file model. Error: {e}")
         return None, None, None, None, None
 
-# Load objects
-model_nb, model_svm, model_ensemble, scaler, feature_names = load_model_objects()
+# Panggil fungsi load
+model_ensemble, model_nb, model_svm, scaler, feature_names = load_model_objects()
 
-# --- 3. Fungsi Bantuan (Helper) ---
-# Preprocessing Input (Pengganti preprocess_text)
+# --- 3. Fungsi Preprocessing Input ---
 def preprocess_input(data, scaler, feature_names):
+    # 1. Ubah dictionary input ke DataFrame
     df = pd.DataFrame([data])
+    
+    # 2. One-Hot Encoding (Sama seperti training)
     df_encoded = pd.get_dummies(df)
-    # Reindex agar kolom sama persis dengan data training (isi 0 jika tidak ada)
+    
+    # 3. Penyelarasan Kolom (CRITICAL STEP)
+    # Agar urutan dan jumlah kolom sama persis dengan feature_names.pkl
+    # Jika ada kolom kurang (misal user tidak pilih 'Fiber Optic'), akan diisi 0.
     df_final = df_encoded.reindex(columns=feature_names, fill_value=0)
-    # Scaling
+    
+    # 4. Scaling (Normalisasi angka)
     df_scaled = scaler.transform(df_final)
-    return df_scaled, df_final
+    
+    return df_scaled
 
-# Confidence Label
+# --- 4. Helper UI (Badge Warna) ---
 def get_confidence_badge(prob):
     if prob > 75:
         return "🔴 Tinggi", "error"
@@ -90,18 +75,17 @@ def get_confidence_badge(prob):
     else:
         return "🟢 Rendah", "success"
 
-# --- 4. UI Utama ---
+# --- 5. UI UTAMA ---
 st.title("📉 Analisis Churn Pelanggan")
-st.markdown("### Ensemble Model (Naive Bayes + SVM)")
+st.markdown("### Ensemble Model (Loaded from Colab)")
 
-models_loaded = all([model_nb, model_svm, model_ensemble, scaler, feature_names])
-
-if not models_loaded:
-    st.error("⚠ File CSV tidak ditemukan atau gagal dimuat. Pastikan 'WA_Fn-UseC_-Telco-Customer-Churn.csv' ada.")
+# Cek apakah model berhasil di-load
+if model_ensemble is None:
+    st.warning("Menunggu file model (.pkl) diupload...")
 else:
     st.subheader("✍ Masukkan Data Profil")
 
-    # --- Pilihan Contoh (Seperti 'Pilih contoh ulasan') ---
+    # --- Pilihan Contoh Profil ---
     example_profiles = {
         "Contoh 1: Pelanggan Baru (Risiko Tinggi)": {
             'tenure': 1, 'MonthlyCharges': 70.0, 'TotalCharges': 70.0, 
@@ -127,7 +111,7 @@ else:
 
     defaults = example_profiles[selected_example] if selected_example != "-- Ketik manual --" else None
 
-    # --- Input Form (Pengganti Text Area) ---
+    # --- Input Form ---
     with st.container(border=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -141,7 +125,7 @@ else:
             total = st.number_input("Total Biaya ($)", 0.0, 10000.0, value=defaults['TotalCharges'] if defaults else 100.0)
             security = st.selectbox("Online Security", ['No', 'Yes', 'No internet service'], index=['No', 'Yes', 'No internet service'].index(defaults['OnlineSecurity']) if defaults else 0)
 
-    # --- Tombol Aksi (Sama Persis dengan Kode Film) ---
+    # --- Tombol Aksi ---
     col1, col2, col3 = st.columns(3)
     with col1:
         predict_btn = st.button("🔍 Analisis", type="primary")
@@ -151,81 +135,87 @@ else:
         show_details = st.checkbox("Detail preprocessing", value=False)
 
     if predict_btn:
-        with st.spinner('Menganalisis...'):
+        with st.spinner('Menganalisis data...'):
             try:
                 # 1. Siapkan Data Input Dictionary
+                # Kita set default value untuk fitur lain (gender, partner, dll) 
+                # karena fitur tersebut tidak ada di form input tapi dibutuhkan model.
                 input_data = {
                     'tenure': tenure, 'MonthlyCharges': monthly, 'TotalCharges': total,
                     'Contract': contract, 'InternetService': internet, 'PaymentMethod': payment,
                     'OnlineSecurity': security, 'TechSupport': tech,
-                    # Default values untuk fitur yang tidak ditampilkan agar UI bersih
+                    # Default values (Asumsi)
                     'gender': 'Male', 'Partner': 'No', 'Dependents': 'No', 'PhoneService': 'Yes',
                     'MultipleLines': 'No', 'OnlineBackup': 'No', 'DeviceProtection': 'No',
                     'StreamingTV': 'No', 'StreamingMovies': 'No', 'PaperlessBilling': 'Yes', 'SeniorCitizen': 0
                 }
 
-                # 2. Preprocess
-                vec, df_processed = preprocess_input(input_data, scaler, feature_names)
+                # 2. Preprocess (Encoding & Scaling)
+                input_scaled = preprocess_input(input_data, scaler, feature_names)
 
-                # 3. Prediksi
-                pred_nb = model_nb.predict(vec)[0]
-                pred_svm = model_svm.predict(vec)[0]
-                pred_ensemble = model_ensemble.predict(vec)[0]
+                # 3. Prediksi (Ensemble)
+                pred_ensemble = model_ensemble.predict(input_scaled)[0]
+                prob_ensemble = model_ensemble.predict_proba(input_scaled)[0]
 
-                prob_nb = model_nb.predict_proba(vec)[0]
-                prob_svm = model_svm.predict_proba(vec)[0]
-                prob_ensemble = model_ensemble.predict_proba(vec)[0]
+                # 4. Prediksi Model Lain (Untuk Perbandingan)
+                prob_nb = model_nb.predict_proba(input_scaled)[0]
+                pred_nb = model_nb.predict(input_scaled)[0]
+                
+                prob_svm = model_svm.predict_proba(input_scaled)[0]
+                pred_svm = model_svm.predict(input_scaled)[0]
 
                 # ======== Hasil Ensemble ========
                 st.subheader("🎯 Hasil Analisis (Ensemble)")
 
-                # Class 1 = Churn, Class 0 = Stay
+                # Class 1 = Churn (Positif), Class 0 = Stay (Negatif)
                 churn_prob = prob_ensemble[1] * 100
                 conf_text, conf_type = get_confidence_badge(churn_prob)
 
                 if pred_ensemble == 1:
                     st.error("### ❌ Prediksi: AKAN CHURN (Berhenti)")
-                    st.write("Pelanggan ini berisiko tinggi untuk berhenti berlangganan.")
+                    st.write("Pelanggan ini memiliki kecenderungan tinggi untuk berhenti berlangganan.")
                 else:
                     st.success("### ✅ Prediksi: SETIA (Stay)")
-                    st.write("Pelanggan ini diprediksi akan tetap berlangganan.")
+                    st.write("Pelanggan ini diprediksi akan tetap menggunakan layanan.")
 
                 st.info(f"Tingkat Risiko Churn: {conf_text} ({churn_prob:.1f}%)")
 
-                # Probabilitas
+                # Metrics Probabilitas
                 st.write("📊 Probabilitas:")
-                col1, col2 = st.columns(2)
-
-                with col1:
+                m1, m2 = st.columns(2)
+                with m1:
                     st.metric("Akan Stay", f"{prob_ensemble[0]*100:.1f}%")
-                with col2:
+                with m2:
                     st.metric("Akan Churn", f"{prob_ensemble[1]*100:.1f}%")
 
                 # ======== Bandingkan Model ========
                 if show_comparison:
+                    st.divider()
                     st.subheader("📌 Perbandingan Model")
 
-                    comp1, comp2, comp3 = st.columns(3)
-                    with comp1:
+                    k1, k2, k3 = st.columns(3)
+                    with k1:
                         st.metric("Naive Bayes", 
                                   "CHURN" if pred_nb == 1 else "STAY",
                                   f"{prob_nb[1]*100:.1f}% Risk")
-                    with comp2:
+                    with k2:
                         st.metric("Linear SVM", 
                                   "CHURN" if pred_svm == 1 else "STAY",
                                   f"{prob_svm[1]*100:.1f}% Risk")
-                    with comp3:
+                    with k3:
                         st.metric("Ensemble", 
                                   "CHURN" if pred_ensemble == 1 else "STAY",
                                   f"{prob_ensemble[1]*100:.1f}% Risk")
 
                 # ======== Detail Preprocessing ========
                 if show_details:
+                    st.divider()
                     st.subheader("🔎 Detail Preprocessing")
-                    st.text("Input Mentah (Dictionary):")
+                    st.text("Input Mentah (User):")
                     st.write(input_data)
-                    st.text("Setelah Encoding & Scaling (Siap Masuk Model):")
-                    st.dataframe(pd.DataFrame(vec, columns=feature_names).head())
+                    st.text("Input Scaled (Masuk ke Model):")
+                    # Tampilkan dataframe hasil scaling untuk debugging
+                    st.dataframe(pd.DataFrame(input_scaled, columns=feature_names).head())
 
             except Exception as e:
-                st.error(f"❌ Terjadi kesalahan: {e}")
+                st.error(f"❌ Terjadi kesalahan saat prediksi: {e}")
